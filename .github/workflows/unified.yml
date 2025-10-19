@@ -1,0 +1,259 @@
+name: Unified Multi-Account Workflow (v3.5 UltraSafe)
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_commits:
+        description: "Jumlah total commit per akun"
+        required: true
+        default: "1650"
+      total_days:
+        description: "Jumlah hari pembagian commit"
+        required: true
+        default: "365"
+      total_prs:
+        description: "Jumlah Pull Request per akun"
+        required: true
+        default: "120"
+      total_issues:
+        description: "Jumlah Issue per akun"
+        required: true
+        default: "130"
+      repo_count:
+        description: "Jumlah repository tambahan per akun"
+        required: true
+        default: "25"
+      target_repo:
+        description: "Repository utama tempat aktivitas"
+        required: true
+        default: "anjaymabarselebew/HAPUS"
+
+jobs:
+  unified:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        include:
+          - account: anjymabarselebew
+            email: 125349560+AnjaymabarSelebew@users.noreply.github.com
+            token_secret: PAT1
+          - account: trismegistr
+            email: 76803495+trismegistr@users.noreply.github.com
+            token_secret: PAT2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Quick start delay (per akun)
+        run: |
+          DELAY=$((5 + RANDOM % 10))
+          echo "🕒 Menunggu $DELAY detik sebelum memulai akun ${{ matrix.account }}..."
+          sleep $DELAY
+
+      - name: Setup Git Identity
+        run: |
+          git config --global user.name "${{ matrix.account }}"
+          git config --global user.email "${{ matrix.email }}"
+          echo "✅ Git identity diset untuk ${{ matrix.account }}"
+          gh --version || true
+          gh auth status || true
+
+      - name: Clone Target Repository
+        env:
+          GH_TOKEN: ${{ secrets[matrix.token_secret] }}
+          TARGET_REPO: ${{ github.event.inputs.target_repo }}
+        run: |
+          set -e
+          echo "🔄 Cloning $TARGET_REPO..."
+          git clone --filter=blob:none --depth=1 https://x-access-token:${GH_TOKEN}@github.com/$TARGET_REPO repo
+          cd repo
+          # pastikan remote pakai token yang benar (re-auth origin)
+          git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git
+          git config user.name "${{ matrix.account }}"
+          git config user.email "${{ matrix.email }}"
+          echo "✅ Repo berhasil dikloning untuk ${{ matrix.account }}"
+
+      - name: Generate Commits (author-correct, safe push)
+        env:
+          TOTAL_COMMITS: ${{ github.event.inputs.total_commits }}
+          TOTAL_DAYS: ${{ github.event.inputs.total_days }}
+          GH_TOKEN: ${{ secrets[matrix.token_secret] }}
+          TARGET_REPO: ${{ github.event.inputs.target_repo }}
+        run: |
+          set -e
+          cd repo
+          mkdir -p logs
+          COMMITS_PER_DAY=$((TOTAL_COMMITS / TOTAL_DAYS))
+          START_DATE=$(date -d "$TOTAL_DAYS days ago" +%Y-%m-%d)
+          echo "📊 Membuat $TOTAL_COMMITS commit..."
+
+          for ((day=0; day<TOTAL_DAYS; day++)); do
+            DATE_STR=$(date -d "$START_DATE +$day days" +%Y-%m-%d)
+            for ((i=1; i<=COMMITS_PER_DAY; i++)); do
+              FILE="logs/${{ matrix.account }}_$day.txt"
+              echo "Commit $i oleh ${{ matrix.account }} pada $DATE_STR" >> "$FILE"
+              git add "$FILE"
+              GIT_COMMITTER_DATE="$DATE_STR 12:00:00" \
+              GIT_AUTHOR_DATE="$DATE_STR 12:00:00" \
+              git commit --author="${{ matrix.account }} <${{ matrix.email }}>" -m "Auto commit $i by ${{ matrix.account }}" || true
+            done
+          done
+
+          # offset acak sebelum push agar tidak tabrakan antar akun
+          DELAY_PUSH=$((5 + RANDOM % 20))
+          echo "⏳ Menunggu $DELAY_PUSH detik sebelum push agar tidak tabrakan..."
+          sleep $DELAY_PUSH
+
+          echo "🚀 Push langsung ke main (safe mode + retries)..."
+          ATTEMPT=1
+          until [ $ATTEMPT -gt 4 ]; do
+            git fetch origin main --depth=1 || true
+            git pull --rebase --autostash https://x-access-token:${GH_TOKEN}@github.com/$TARGET_REPO main || true
+            if git push https://x-access-token:${GH_TOKEN}@github.com/$TARGET_REPO HEAD:main; then
+              echo "✅ Push sukses pada attempt #$ATTEMPT"
+              break
+            else
+              S=$((2 * ATTEMPT))
+              echo "⚠️ Push gagal (attempt #$ATTEMPT). Retry dalam ${S}s..."
+              sleep $S
+              ATTEMPT=$((ATTEMPT+1))
+            fi
+          done
+          echo "✅ Commit selesai dipush oleh ${{ matrix.account }}!"
+
+      - name: Create Pull Requests (serial, robust)
+        env:
+          GH_TOKEN: ${{ secrets[matrix.token_secret] }}
+          TARGET_REPO: ${{ github.event.inputs.target_repo }}
+          TOTAL_PRS: ${{ github.event.inputs.total_prs }}
+        run: |
+          set -e
+          cd repo
+          echo "🔀 Membuat $TOTAL_PRS Pull Request..."
+          for i in $(seq 1 $TOTAL_PRS); do
+            branch="auto-${{ matrix.account }}-pr-$i-$(date +%s)-$RANDOM"
+            echo "Pull request #$i by ${{ matrix.account }}" > pr_${{ matrix.account }}_$i.txt
+            git checkout -B "$branch"
+            git add "pr_${{ matrix.account }}_$i.txt"
+            git commit --author="${{ matrix.account }} <${{ matrix.email }}>" -m "PR otomatis #$i oleh ${{ matrix.account }}" || true
+            git push -f https://x-access-token:${GH_TOKEN}@github.com/$TARGET_REPO HEAD:"$branch"
+            # retry gh pr create jika gagal sementara
+            n=1; until [ $n -gt 3 ]; do
+              if gh pr create \
+                  --title "PR #$i dari ${{ matrix.account }}" \
+                  --body "PR otomatis oleh ${{ matrix.account }}" \
+                  --base main --head "$branch" \
+                  --repo "$TARGET_REPO"; then
+                echo "✅ PR #$i dibuat."
+                break
+              else
+                echo "⏳ Retry membuat PR #$i (attempt $n)..."
+                sleep $((1 + RANDOM % 3))
+                n=$((n+1))
+              fi
+            done
+            sleep $((RANDOM % 2))  # jitter kecil
+          done
+          echo "✅ Semua PR selesai dibuat."
+
+      - name: Create Issues (serial, robust)
+        env:
+          GH_TOKEN: ${{ secrets[matrix.token_secret] }}
+          TARGET_REPO: ${{ github.event.inputs.target_repo }}
+          TOTAL_ISSUES: ${{ github.event.inputs.total_issues }}
+        run: |
+          set -e
+          echo "📋 Membuat $TOTAL_ISSUES issues..."
+          for i in $(seq 1 $TOTAL_ISSUES); do
+            n=1; until [ $n -gt 3 ]; do
+              if gh issue create \
+                --title "Issue #$i dari ${{ matrix.account }}" \
+                --body "Auto-generated issue $i oleh akun ${{ matrix.account }}" \
+                --repo "$TARGET_REPO"; then
+                echo "✅ Issue #$i dibuat."
+                break
+              else
+                echo "⏳ Retry membuat Issue #$i (attempt $n)..."
+                sleep $((1 + RANDOM % 3))
+                n=$((n+1))
+              fi
+            done
+            sleep $((RANDOM % 2)) # jitter kecil
+          done
+          echo "✅ Semua issue selesai dibuat."
+
+      - name: Create Additional Repositories (robust create+clone)
+        env:
+          PAT_TOKEN: ${{ secrets[matrix.token_secret] }}
+        run: |
+          set -e
+          WORDS=("quantum" "nova" "lumen" "matrix" "orbit" "vector" "sigma" "neon" "fusion" "zenith")
+          SUFFIX=("project" "service" "system" "app" "engine" "hub" "core" "cloud" "framework")
+          LANGS=("Python" "C++" "Go" "Swift" "Java" "JavaScript" "Ruby")
+          EXT=("py" "cpp" "go" "swift" "java" "js" "rb")
+          CONTENTS=(
+            "print('Hello from Python!')"
+            "#include <iostream>\nint main(){std::cout << \"Hello from C++!\"; return 0;}"
+            "package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"Hello from Go!\")}"
+            "print(\"Hello from Swift!\")"
+            "public class Main { public static void main(String[] args){ System.out.println(\"Hello from Java!\"); } }"
+            "console.log('Hello from JavaScript!');"
+            "puts 'Hello from Ruby!'"
+          )
+
+          COUNT=${{ github.event.inputs.repo_count }}
+          git config --global user.name "${{ matrix.account }}"
+          git config --global user.email "${{ matrix.email }}"
+
+          echo "=== [${{ matrix.account }}] Membuat $COUNT repositori cepat ==="
+          for i in $(seq 1 $COUNT); do
+            NAME="${WORDS[$RANDOM % ${#WORDS[@]}]}-${SUFFIX[$RANDOM % ${#SUFFIX[@]}]}"
+            LANG_INDEX=$((RANDOM % ${#LANGS[@]}))
+            FILE_EXT=${EXT[$LANG_INDEX]}
+            FILE_CONTENT=${CONTENTS[$LANG_INDEX]}
+            FILE_NAME="main.${FILE_EXT}"
+
+            echo "📦 [$i/$COUNT] Membuat repo: $NAME"
+            # Create repo with retries and existence check
+            CREATED=0
+            for attempt in 1 2 3; do
+              RESP=$(curl -s -H "Authorization: token $PAT_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -d "{\"name\":\"$NAME\",\"auto_init\":true}" \
+                https://api.github.com/user/repos)
+              if echo "$RESP" | grep -q "\"full_name\""; then
+                CREATED=1; break
+              else
+                echo "⏳ Retry create repo ($attempt) ..."
+                sleep 3
+              fi
+            done
+
+            # Wait for repo availability (avoid 404 on immediate clone)
+            if [ $CREATED -eq 1 ]; then
+              for wait_attempt in 1 2 3; do
+                if git ls-remote https://x-access-token:${PAT_TOKEN}@github.com/${{ matrix.account }}/$NAME.git &>/dev/null; then
+                  break
+                else
+                  echo "⌛ Menunggu repo tersedia (attempt $wait_attempt) ..."
+                  sleep 2
+                fi
+              done
+            fi
+
+            # Clone, commit, push (silent, robust)
+            git clone --quiet --depth=1 https://x-access-token:${PAT_TOKEN}@github.com/${{ matrix.account }}/$NAME.git || (echo "❌ Gagal clone $NAME"; continue)
+            cd "$NAME"
+            echo "$FILE_CONTENT" > "$FILE_NAME"
+            git add .
+            git commit --author="${{ matrix.account }} <${{ matrix.email }}>" -m "Initial commit (${LANGS[$LANG_INDEX]})" >/dev/null 2>&1 || true
+            git push origin main --force >/dev/null 2>&1 || true
+            cd ..
+            rm -rf "$NAME"
+
+            # jitter kecil antar pembuatan repo
+            sleep $((1 + RANDOM % 3))
+          done
+          echo "✅ Semua repo tambahan selesai!"
