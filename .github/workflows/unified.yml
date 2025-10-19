@@ -1,4 +1,4 @@
-name: Unified Multi-Account Workflow (v3.6 UltraSafe - Fixes)
+name: Unified Multi-Account Workflow (v3.7 IssueFix)
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ on:
       total_prs:
         description: "Jumlah Pull Request per akun"
         required: true
-        default: "1"
+        default: "36"
       total_issues:
         description: "Jumlah Issue per akun"
         required: true
@@ -22,7 +22,7 @@ on:
       repo_count:
         description: "Jumlah repository tambahan per akun"
         required: true
-        default: "1"
+        default: "2"
       target_repo:
         description: "Repository utama tempat aktivitas"
         required: true
@@ -39,7 +39,6 @@ jobs:
           - account: hakem97
             email: 62814217+Hakem97@users.noreply.github.com 
             token_secret: PAT1
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,54 +64,14 @@ jobs:
           cd repo
           git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git
 
-      - name: Commit Generator (fast author tracking)
-        env:
-          TOTAL_COMMITS: ${{ github.event.inputs.total_commits }}
-          TOTAL_DAYS: ${{ github.event.inputs.total_days }}
-          GH_TOKEN: ${{ secrets[matrix.token_secret] }}
-          TARGET_REPO: ${{ github.event.inputs.target_repo }}
-        run: |
-          cd repo
-          mkdir -p logs
-          COMMITS_PER_DAY=$((TOTAL_COMMITS / TOTAL_DAYS))
-          START_DATE=$(date -d "$TOTAL_DAYS days ago" +%Y-%m-%d)
-          for ((day=0; day<TOTAL_DAYS; day++)); do
-            DATE_STR=$(date -d "$START_DATE +$day days" +%Y-%m-%d)
-            FILE="logs/${{ matrix.account }}_$day.txt"
-            for ((i=1; i<=COMMITS_PER_DAY; i++)); do
-              echo "Commit $i oleh ${{ matrix.account }} pada $DATE_STR" >> "$FILE"
-            done
-            git add "$FILE"
-            GIT_COMMITTER_DATE="$DATE_STR 12:00:00" \
-            GIT_AUTHOR_DATE="$DATE_STR 12:00:00" \
-            git commit --author="${{ matrix.account }} <${{ matrix.email }}>" -m "Auto commits by ${{ matrix.account }} on $DATE_STR" || true
-          done
-
-          DELAY_PUSH=$((5 + RANDOM % 15))
-          echo "⏳ Delay $DELAY_PUSH detik sebelum push (anti tabrakan)"
-          sleep $DELAY_PUSH
-
-          ATTEMPT=1
-          until [ $ATTEMPT -gt 3 ]; do
-            git fetch origin main || true
-            git pull --rebase --autostash origin main || true
-            if git push https://x-access-token:${GH_TOKEN}@github.com/$TARGET_REPO HEAD:main; then
-              echo "✅ Push sukses (attempt $ATTEMPT)"
-              break
-            fi
-            echo "⚠️ Retry push ($ATTEMPT)..."
-            sleep $((2 * ATTEMPT))
-            ATTEMPT=$((ATTEMPT+1))
-          done
-
-      - name: Create PRs (parallel 6)
+      - name: Create PRs (safe parallel)
         env:
           GH_TOKEN: ${{ secrets[matrix.token_secret] }}
           TARGET_REPO: ${{ github.event.inputs.target_repo }}
           TOTAL_PRS: ${{ github.event.inputs.total_prs }}
         run: |
           cd repo
-          seq 1 $TOTAL_PRS | xargs -I{} -P 6 bash -c '
+          seq 1 $TOTAL_PRS | xargs -I{} -P 3 bash -c '
             i="{}"
             branch="auto-${{ matrix.account }}-pr-$i-$(date +%s)-$RANDOM"
             echo "Pull request #$i by ${{ matrix.account }}" > pr_${{ matrix.account }}_$i.txt
@@ -120,28 +79,53 @@ jobs:
             git add pr_${{ matrix.account }}_$i.txt
             git commit --author="${{ matrix.account }} <${{ matrix.email }}>" -m "PR otomatis #$i oleh ${{ matrix.account }}" || true
             git push -f https://x-access-token:${GH_TOKEN}@github.com/$TARGET_REPO HEAD:"$branch"
-            gh pr create --title "PR #$i dari ${{ matrix.account }}" --body "PR otomatis oleh ${{ matrix.account }}" --base main --head "$branch" --repo "$TARGET_REPO" || true
+            for attempt in 1 2 3; do
+              echo "🔁 Attempt $attempt membuat PR #$i"
+              gh pr create \
+                --title "PR #$i dari ${{ matrix.account }}" \
+                --body "PR otomatis oleh ${{ matrix.account }}" \
+                --base main --head "$branch" --repo "$TARGET_REPO" && break || {
+                echo "⚠️ Gagal PR #$i (attempt $attempt)"; sleep $((2 * attempt));
+              }
+            done
+            sleep $((RANDOM % 3))
           '
 
-      - name: Create Issues (parallel 6)
+      - name: Create Issues (safe parallel)
         env:
           GH_TOKEN: ${{ secrets[matrix.token_secret] }}
           TARGET_REPO: ${{ github.event.inputs.target_repo }}
           TOTAL_ISSUES: ${{ github.event.inputs.total_issues }}
         run: |
-          seq 1 $TOTAL_ISSUES | xargs -I{} -P 6 bash -c '
+          echo "📋 Membuat $TOTAL_ISSUES issues aman (retry + delay)..."
+          seq 1 $TOTAL_ISSUES | xargs -I{} -P 3 bash -c '
             i="{}"
-            gh issue create \
-              --title "Issue #$i dari ${{ matrix.account }}" \
-              --body "Auto-generated issue $i oleh akun ${{ matrix.account }}" \
-              --repo "$TARGET_REPO" || true
+            for attempt in 1 2 3; do
+              RESPONSE=$(gh issue create \
+                --title "Issue #$i dari ${{ matrix.account }}" \
+                --body "Auto issue $i oleh akun ${{ matrix.account }}" \
+                --repo "$TARGET_REPO" 2>&1)
+              EXIT=$?
+              if [ $EXIT -eq 0 ]; then
+                echo "✅ Issue #$i sukses dibuat oleh ${{ matrix.account }}"
+                echo "$RESPONSE" | grep "https://github.com" || true
+                break
+              else
+                echo "⚠️ Gagal Issue #$i (attempt $attempt): $RESPONSE"
+                if echo "$RESPONSE" | grep -qE "403|404|429"; then
+                  echo "🚧 Kemungkinan rate-limit atau permission issue. Menunggu 5 detik..."
+                  sleep 5
+                fi
+                sleep $((2 * attempt))
+              fi
+            done
+            sleep $((RANDOM % 2))
           '
 
-      - name: Create Additional Repos (3-word unique, parallel-safe) - FIXED
+      - name: Create Additional Repos (same as v3.6 safe)
         env:
           PAT_TOKEN: ${{ secrets[matrix.token_secret] }}
         run: |
-          # tolerate failures in this step (we do explicit retries)
           set +e
           WORDS=("quantum" "nova" "lumen" "matrix" "orbit" "vector" "sigma" "neon" "fusion" "zenith" "alpha" "omega" "pulse" "nexus" "terra" "vortex" "plasma" "aether" "chrono" "helios" "astra" "echo" "draco" "titan" "ion")
           SUFFIX=("project" "service" "system" "app" "engine" "hub" "core" "cloud" "framework" "module" "node" "matrix" "unit")
@@ -162,81 +146,38 @@ jobs:
           git config --global user.email "${{ matrix.email }}"
 
           echo "=== Membuat $COUNT repo unik untuk ${{ matrix.account }} ==="
-
-          # create up to COUNT repos, allowing up to 3 parallel creates
           created_total=0
           while [ $created_total -lt $COUNT ]; do
-            # spawn up to 3 parallel attempts
             pids=()
             for slot in 1 2 3; do
               if [ $created_total -ge $COUNT ]; then break; fi
               (
-                # generate 3-word name
                 NAME="${WORDS[$RANDOM % ${#WORDS[@]}]}-${SUFFIX[$RANDOM % ${#SUFFIX[@]}]}-${WORDS[$RANDOM % ${#WORDS[@]}]}"
-                echo "→ Trying name $NAME"
-
-                # check existence
+                echo "→ Mencoba $NAME"
                 exists=$(curl -s -H "Authorization: token $PAT_TOKEN" "https://api.github.com/repos/${{ matrix.account }}/$NAME" | grep -c "\"full_name\"" || true)
-                if [ "$exists" -ge 1 ]; then
-                  echo "⚠️ Repo $NAME sudah ada, skipping"
-                  exit 0
-                fi
+                if [ "$exists" -ge 1 ]; then echo "⚠️ Repo $NAME sudah ada"; exit 0; fi
 
-                # attempt create with retries
-                created=0
                 for attempt in 1 2 3; do
-                  echo "⏳ Creating $NAME (attempt $attempt)..."
                   resp=$(curl -s -H "Authorization: token $PAT_TOKEN" -H "Accept: application/vnd.github+json" -d "{\"name\":\"$NAME\",\"auto_init\":true}" https://api.github.com/user/repos)
                   if echo "$resp" | grep -q "\"full_name\""; then
-                    created=1
                     echo "✅ Created $NAME"
-                    break
-                  else
-                    echo "⚠️ Create failed for $NAME, resp snippet: $(echo "$resp" | head -c 200)"
-                    sleep 2
-                  fi
-                done
-
-                if [ $created -eq 1 ]; then
-                  # wait until repo is available (avoid immediate 404)
-                  for w in 1 2 3 4; do
-                    if git ls-remote "https://x-access-token:${PAT_TOKEN}@github.com/${{ matrix.account }}/$NAME.git" &>/dev/null; then
-                      break
-                    fi
-                    sleep 2
-                  done
-
-                  # clone and push
-                  if git clone --quiet --depth=1 "https://x-access-token:${PAT_TOKEN}@github.com/${{ matrix.account }}/$NAME.git"; then
+                    git clone --quiet --depth=1 "https://x-access-token:${PAT_TOKEN}@github.com/${{ matrix.account }}/$NAME.git"
                     cd "$NAME"
                     LANG_INDEX=$((RANDOM % ${#LANGS[@]}))
                     echo "${CONTENTS[$LANG_INDEX]}" > "main.${EXT[$LANG_INDEX]}"
-                    git add .
-                    git commit --author="${{ matrix.account }} <${{ matrix.email }}>" -m "Initial commit (${LANGS[$LANG_INDEX]})" >/dev/null 2>&1 || true
-                    git push origin main --force >/dev/null 2>&1 || true
-                    cd ..
-                    rm -rf "$NAME"
-                    exit 0
+                    git add . && git commit -m "Initial commit (${LANGS[$LANG_INDEX]})" >/dev/null 2>&1
+                    git push origin main --force >/dev/null 2>&1
+                    cd .. && rm -rf "$NAME"
+                    break
                   else
-                    echo "❌ Clone failed for $NAME"
-                    exit 0
+                    echo "⚠️ Gagal create $NAME (attempt $attempt)"; sleep 3
                   fi
-                else
-                  exit 0
-                fi
+                done
               ) &
               pids+=($!)
-              # small jitter between spawns
               sleep 1
             done
-
-            # wait for one of them to finish and count successes by checking background exit codes
-            for pid in "${pids[@]}"; do
-              wait $pid || true
-              # if any background exited with 0, increment created_total (we'll conservatively assume success)
-              created_total=$((created_total+1))
-              if [ $created_total -ge $COUNT ]; then break 2; fi
-            done
+            for pid in "${pids[@]}"; do wait $pid || true; done
+            created_total=$((created_total+3))
           done
-
           echo "✅ Semua repo tambahan selesai!"
