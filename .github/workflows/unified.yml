@@ -14,7 +14,7 @@ on:
       total_prs:
         description: "Jumlah Pull Request per akun"
         required: true
-        default: "120"
+        default: "1"
       total_issues:
         description: "Jumlah Issue per akun"
         required: true
@@ -22,7 +22,7 @@ on:
       repo_count:
         description: "Jumlah repository tambahan per akun"
         required: true
-        default: "25"
+        default: "1"
       target_repo:
         description: "Repository utama tempat aktivitas"
         required: true
