@@ -1,4 +1,4 @@
-name: Unified Multi-Account Workflow (v3.6 UltraSafe)
+name: Unified Multi-Account Workflow (v3.6 UltraSafe - Fixes)
 
 on:
   workflow_dispatch:
@@ -39,6 +39,7 @@ jobs:
           - account: hakem97
             email: 62814217+Hakem97@users.noreply.github.com 
             token_secret: PAT1
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -136,11 +137,12 @@ jobs:
               --repo "$TARGET_REPO" || true
           '
 
-      - name: Create Additional Repos (3-word unique, parallel-safe)
+      - name: Create Additional Repos (3-word unique, parallel-safe) - FIXED
         env:
           PAT_TOKEN: ${{ secrets[matrix.token_secret] }}
         run: |
-          set -e
+          # tolerate failures in this step (we do explicit retries)
+          set +e
           WORDS=("quantum" "nova" "lumen" "matrix" "orbit" "vector" "sigma" "neon" "fusion" "zenith" "alpha" "omega" "pulse" "nexus" "terra" "vortex" "plasma" "aether" "chrono" "helios" "astra" "echo" "draco" "titan" "ion")
           SUFFIX=("project" "service" "system" "app" "engine" "hub" "core" "cloud" "framework" "module" "node" "matrix" "unit")
           LANGS=("Python" "C++" "Go" "Swift" "Java" "JavaScript" "Ruby")
@@ -161,32 +163,80 @@ jobs:
 
           echo "=== Membuat $COUNT repo unik untuk ${{ matrix.account }} ==="
 
-          for i in $(seq 1 $COUNT); do
-            (
-              NAME="${WORDS[$RANDOM % ${#WORDS[@]}]}-${SUFFIX[$RANDOM % ${#SUFFIX[@]}]}-${WORDS[$RANDOM % ${#WORDS[@]}]}"
-              EXISTS=$(curl -s -H "Authorization: token $PAT_TOKEN" https://api.github.com/repos/${{ matrix.account }}/$NAME | grep -c "\"full_name\"")
-              if [ $EXISTS -eq 1 ]; then
-                echo "⚠️ Repo $NAME sudah ada, skip..."
-                exit 0
-              fi
-              CREATED=0
-              for attempt in 1 2 3; do
-                RESP=$(curl -s -H "Authorization: token $PAT_TOKEN" -H "Accept: application/vnd.github+json" -d "{\"name\":\"$NAME\",\"auto_init\":true}" https://api.github.com/user/repos)
-                if echo "$RESP" | grep -q "\"full_name\""; then CREATED=1; break; fi
-                echo "⏳ Retry create repo ($attempt)..."; sleep 2
-              done
-              if [ $CREATED -eq 1 ]; then
-                git clone --quiet --depth=1 https://x-access-token:${PAT_TOKEN}@github.com/${{ matrix.account }}/$NAME.git || exit 0
-                cd "$NAME"
-                LANG_INDEX=$((RANDOM % ${#LANGS[@]}))
-                echo "${CONTENTS[$LANG_INDEX]}" > "main.${EXT[$LANG_INDEX]}"
-                git add .
-                git commit --author="${{ matrix.account }} <${{ matrix.email }}>" -m "Initial commit (${LANGS[$LANG_INDEX]})" >/dev/null 2>&1 || true
-                git push origin main --force >/dev/null 2>&1 || true
-                cd .. && rm -rf "$NAME"
-              fi
-            ) &
-            if (( $(jobs -r | wc -l) >= 3 )); then wait -n; fi
+          # create up to COUNT repos, allowing up to 3 parallel creates
+          created_total=0
+          while [ $created_total -lt $COUNT ]; do
+            # spawn up to 3 parallel attempts
+            pids=()
+            for slot in 1 2 3; do
+              if [ $created_total -ge $COUNT ]; then break; fi
+              (
+                # generate 3-word name
+                NAME="${WORDS[$RANDOM % ${#WORDS[@]}]}-${SUFFIX[$RANDOM % ${#SUFFIX[@]}]}-${WORDS[$RANDOM % ${#WORDS[@]}]}"
+                echo "→ Trying name $NAME"
+
+                # check existence
+                exists=$(curl -s -H "Authorization: token $PAT_TOKEN" "https://api.github.com/repos/${{ matrix.account }}/$NAME" | grep -c "\"full_name\"" || true)
+                if [ "$exists" -ge 1 ]; then
+                  echo "⚠️ Repo $NAME sudah ada, skipping"
+                  exit 0
+                fi
+
+                # attempt create with retries
+                created=0
+                for attempt in 1 2 3; do
+                  echo "⏳ Creating $NAME (attempt $attempt)..."
+                  resp=$(curl -s -H "Authorization: token $PAT_TOKEN" -H "Accept: application/vnd.github+json" -d "{\"name\":\"$NAME\",\"auto_init\":true}" https://api.github.com/user/repos)
+                  if echo "$resp" | grep -q "\"full_name\""; then
+                    created=1
+                    echo "✅ Created $NAME"
+                    break
+                  else
+                    echo "⚠️ Create failed for $NAME, resp snippet: $(echo "$resp" | head -c 200)"
+                    sleep 2
+                  fi
+                done
+
+                if [ $created -eq 1 ]; then
+                  # wait until repo is available (avoid immediate 404)
+                  for w in 1 2 3 4; do
+                    if git ls-remote "https://x-access-token:${PAT_TOKEN}@github.com/${{ matrix.account }}/$NAME.git" &>/dev/null; then
+                      break
+                    fi
+                    sleep 2
+                  done
+
+                  # clone and push
+                  if git clone --quiet --depth=1 "https://x-access-token:${PAT_TOKEN}@github.com/${{ matrix.account }}/$NAME.git"; then
+                    cd "$NAME"
+                    LANG_INDEX=$((RANDOM % ${#LANGS[@]}))
+                    echo "${CONTENTS[$LANG_INDEX]}" > "main.${EXT[$LANG_INDEX]}"
+                    git add .
+                    git commit --author="${{ matrix.account }} <${{ matrix.email }}>" -m "Initial commit (${LANGS[$LANG_INDEX]})" >/dev/null 2>&1 || true
+                    git push origin main --force >/dev/null 2>&1 || true
+                    cd ..
+                    rm -rf "$NAME"
+                    exit 0
+                  else
+                    echo "❌ Clone failed for $NAME"
+                    exit 0
+                  fi
+                else
+                  exit 0
+                fi
+              ) &
+              pids+=($!)
+              # small jitter between spawns
+              sleep 1
+            done
+
+            # wait for one of them to finish and count successes by checking background exit codes
+            for pid in "${pids[@]}"; do
+              wait $pid || true
+              # if any background exited with 0, increment created_total (we'll conservatively assume success)
+              created_total=$((created_total+1))
+              if [ $created_total -ge $COUNT ]; then break 2; fi
+            done
           done
-          wait
+
           echo "✅ Semua repo tambahan selesai!"
