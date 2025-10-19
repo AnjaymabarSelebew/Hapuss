@@ -36,7 +36,7 @@ jobs:
       max-parallel: 7
       matrix:
         include:
-          - account: anjymabarselebew
+          - account: anjaymabarselebew
             email: 125349560+AnjaymabarSelebew@users.noreply.github.com
             token_secret: PAT1
           - account: trismegistr
