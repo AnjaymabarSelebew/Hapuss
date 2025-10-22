@@ -14,7 +14,7 @@ on:
       total_prs:
         description: "Jumlah Pull Request per akun"
         required: true
-        default: "36"
+        default: "120"
       total_issues:
         description: "Jumlah Issue per akun"
         required: true
@@ -22,7 +22,7 @@ on:
       repo_count:
         description: "Jumlah repository tambahan per akun"
         required: true
-        default: "2"
+        default: "25"
       target_repo:
         description: "Repository utama tempat aktivitas"
         required: true
@@ -36,9 +36,37 @@ jobs:
       max-parallel: 9
       matrix:
         include:
-          - account: hakem97
-            email: 62814217+Hakem97@users.noreply.github.com 
+          - account: HuangWendell
+            email: 10686160+HuangWendell@users.noreply.github.com
             token_secret: PAT1
+          - account: wellscho
+            email: 17506678+wellscho@users.noreply.github.com
+            token_secret: PAT2
+          - account: wellington1367
+            email: 26806849+wellington1367@users.noreply.github.com
+            token_secret: PAT3
+          - account: naxhonrox
+            email: 38462880+naxhonrox@users.noreply.github.com
+            token_secret: PAT4
+          - account: christiandelanhol
+            email: 85139679+christiandelanhol@users.noreply.github.com
+            token_secret: PAT5
+          - account: Magateu
+            email: 83436528+Magateu@users.noreply.github.com 
+            token_secret: PAT6
+          - account: willwang623
+            email: 91578547+willwang623@users.noreply.github.com 
+            token_secret: PAT7
+          - account: arthurcostaPiovezan
+            email: 129125297+arthurcostaPiovezan@users.noreply.github.com
+            token_secret: PAT8
+          - account: JSBryanAriasH
+            email: 122652964+JSBryanAriasH@users.noreply.github.com
+            token_secret: PAT9
+          - account: lingxiaoduan
+            email: 127101506+lingxiaoduan@users.noreply.github.com
+            token_secret: PAT10
+          
     steps:
       - name: Checkout
         uses: actions/checkout@v4
