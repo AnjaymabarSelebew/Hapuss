@@ -92,7 +92,7 @@ jobs:
           cd repo
           git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git
 
-      - name: Commit Generator (fast author tracking)
+      - name: Commit Generator (anti tabrakan safe mode)
         env:
           TOTAL_COMMITS: ${{ github.event.inputs.total_commits }}
           TOTAL_DAYS: ${{ github.event.inputs.total_days }}
@@ -103,6 +103,9 @@ jobs:
           mkdir -p logs
           COMMITS_PER_DAY=$((TOTAL_COMMITS / TOTAL_DAYS))
           START_DATE=$(date -d "$TOTAL_DAYS days ago" +%Y-%m-%d)
+
+          echo "📊 Membuat $TOTAL_COMMITS commit untuk ${{ matrix.account }}..."
+
           for ((day=0; day<TOTAL_DAYS; day++)); do
             DATE_STR=$(date -d "$START_DATE +$day days" +%Y-%m-%d)
             FILE="logs/${{ matrix.account }}_$day.txt"
@@ -115,19 +118,29 @@ jobs:
             git commit --author="${{ matrix.account }} <${{ matrix.email }}>" -m "Auto commits by ${{ matrix.account }} on $DATE_STR" || true
           done
 
-          DELAY_PUSH=$((5 + RANDOM % 15))
-          echo "⏳ Delay $DELAY_PUSH detik sebelum push (anti tabrakan)"
+          # 💡 Random delay to avoid concurrent pushes
+          DELAY_PUSH=$((10 + RANDOM % 10))
+          echo "⏳ Delay $DELAY_PUSH detik sebelum push (anti tabrakan antar akun)..."
           sleep $DELAY_PUSH
 
+          # 🔁 Robust push with fetch & rebase retries
           ATTEMPT=1
-          until [ $ATTEMPT -gt 3 ]; do
+          MAX_ATTEMPTS=5
+          until [ $ATTEMPT -gt $MAX_ATTEMPTS ]; do
+            echo "📡 Attempt $ATTEMPT: syncing & pushing..."
             git fetch origin main || true
             git pull --rebase --autostash origin main || true
+
             if git push https://x-access-token:${GH_TOKEN}@github.com/$TARGET_REPO HEAD:main; then
-              echo "✅ Push sukses (attempt $ATTEMPT)"
+              echo "✅ Push sukses oleh ${{ matrix.account }} (attempt $ATTEMPT)"
               break
             fi
-            echo "⚠️ Retry push ($ATTEMPT)..."
-            sleep $((2 * ATTEMPT))
+
+            echo "⚠️ Push gagal attempt $ATTEMPT, tunggu dulu..."
+            sleep $((5 + RANDOM % 10))
             ATTEMPT=$((ATTEMPT+1))
           done
+
+          if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+            echo "🚨 Gagal push setelah $MAX_ATTEMPTS percobaan oleh ${{ matrix.account }}"
+          fi
